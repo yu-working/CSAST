@@ -24,7 +24,8 @@ COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/pytho
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 # copy
-COPY . .
+COPY app.py .
+COPY data/ ./data/
 
 # 暴露 Streamlit 預設的 8501 埠口
 EXPOSE 8501

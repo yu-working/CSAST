@@ -1,30 +1,24 @@
 import streamlit as st
 import pandas as pd
 import akasha
-import dotenv
 import os
-import sys
+import akasha.helper as ah
 
 # --- 1. 環境設定 ---
-if getattr(sys, "frozen", False):
-    BASE_DIR = os.path.dirname(sys.executable)
-else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-dotenv_path = os.path.join(BASE_DIR, ".env")
-dotenv.load_dotenv(dotenv_path)
-
-MODEL = os.getenv("MODEL")
-data_dir = os.getenv("DATA_DIR", "data.xlsx")
+DATA_FOLDER = "data"
+if not os.path.exists(DATA_FOLDER):
+    os.makedirs(DATA_FOLDER)
+DEFAULT_FILE = os.path.join(DATA_FOLDER, "FAQ_Default.xlsx")
+ACTIVE_FILE = os.path.join(DATA_FOLDER, "FAQ_Active.xlsx")
 
 MODEL_CONFIG = {
     "OpenAI (GPT-4o)": {
         "env_var": "OPENAI_API_KEY",
         "model_name": "openai:gpt-4o"
     },
-    "OpenAI (GPT-3.5)": {
+    "OpenAI (GPT-5)": {
         "env_var": "OPENAI_API_KEY",
-        "model_name": "openai:gpt-3.5-turbo"
+        "model_name": "openai:gpt-5"
     },
     "Google Gemini(2.5-flash)": {
         "env_var": "GEMINI_API_KEY",
@@ -36,92 +30,121 @@ MODEL_CONFIG = {
     }
 }
 
+# 初始化 Session State
+if "history_list" not in st.session_state:
+    st.session_state.history_list = []
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
 # 假設圖片路徑
 # USER_AVATAR = "static/user_icon.png"
 # BOT_AVATAR = "https://your-domain.com/bot-logo.png"
 # 用法
 # with st.chat_message("user", avatar=USER_AVATAR):
 
-# --- 2. 資料讀取 (快取優化) ---
-@st.cache_data
+# --- 2. 工具函數 ---
+@st.cache_data    
 def read_excel_sheets():
-    # 讀取 Excel 資料
-    dfs = pd.read_excel(data_dir, sheet_name=["E管家", "智慧插座", "安裝前中後問題"])
-    return dfs
-
-data = read_excel_sheets()
+    # 優先序：Active (使用者上傳) > Default (原始預設)
+    target_path = ACTIVE_FILE if os.path.exists(ACTIVE_FILE) else DEFAULT_FILE
+    
+    if not os.path.exists(target_path):
+        st.error(f"找不到資料庫檔案（預期路徑：{target_path}）")
+        return None
+        
+    target_sheets = ["E管家", "智慧插座", "安裝前中後問題"]
+    try:
+        return pd.read_excel(target_path, sheet_name=target_sheets)
+    except Exception as e:
+        st.error(f"讀取 Excel 失敗: {e}")
+        return None
 
 def format_data_for_ai(data_dict):
+    """將 DataFrame 字典轉為 AI 易讀的字串"""
+    if not data_dict: return "目前無參考資料。"
     full_text = ""
     for name, df in data_dict.items():
         full_text += f"\n--- {name} 知識庫 ---\n"
-        full_text += df.to_csv(index=False) # CSV 格式通常對 AI 來說比 to_string 更省 token 且結構清晰
+        full_text += df.to_csv(index=False)
     return full_text
 
-context_data = format_data_for_ai(data)
+# 定義一個內部函數來把 list 轉回字串，方便計算 Token
+def get_history_string(h_list):
+    return "".join([f"\n提問: {item['q']}\n回覆: {item['a']}" for item in h_list])
 
-system_prompt = f"""
-你是一名客服人員的助理機器人，客服人員，請注意以下事項：
-1. 請先分析提問，是需要一般的問題還是想要從歷史紀錄找出相關資料，如果是一般的問題正常回答即可，如果是想從歷史紀錄找出相關資料，則查找資料{context_data}中有無類似或相關之資訊。
-2. 若資料中有相關資訊，請整理並條列式顯示:歷史提問、歷史回答、裝置世代(如有)、類型、流程階段、關鍵字。如有多個相關資訊，請全部條列出來並區隔開來。
-3. 若資料中無相關資訊，請分析客戶提問，並給予類型、流程階段(僅包含APP、安裝前、安裝中、安裝後)、關鍵字。
-"""
-
-# --- 3. Streamlit 介面設定 ---
-st.set_page_config(page_title="CSAST")
-st.title("CSAST")
-
-# 初始化會話狀態 (Session State)
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "history_text" not in st.session_state:
-    st.session_state.history_text = ""
-
-# 側邊欄：功能按鈕
+# --- 3. Streamlit 側邊欄介面設定 ---
 with st.sidebar:
-    # 下拉式選單選擇模型
-    selected_model_display = st.selectbox(
-        "選擇模型來源",
-        options=list(MODEL_CONFIG.keys())
-    )
-    
+    # 1.下拉式選單選擇模型
+    selected_model_display = st.selectbox("選擇模型來源",options=list(MODEL_CONFIG.keys()))
     # 取得對應的配置
     config = MODEL_CONFIG[selected_model_display]
-    user_api_key_env_var = config["env_var"]
-    user_model_name = config["model_name"]
 
-    # 加入輸入框
-    # type="password" 可以隱藏輸入的內容
+    # 2.加入API_KEY輸入框
     user_api_key = st.text_input(
         "輸入您的 API KEY", 
-        value="",
         type="password",
-        help="輸入後將優先使用此 Key 進行對話"
+        help="輸入有效API_KEY後即可進行對話"
     )
-    # 動態更新環境變數，讓 akasha 能讀取到
+    api_valid = False
     if user_api_key:
-        os.environ[user_api_key_env_var] = user_api_key
+        os.environ[config["env_var"]] = user_api_key
         # 發送一次測試請求以確認 Key 有效性
         try:
             test_ak = akasha.ask(
-                model=user_model_name,
+                model=config["model_name"],
                 temperature=0.1,
             )
             test = test_ak(prompt="return hi")
             st.success("API Key 已就緒！")
-            current_key_in_env = os.getenv(user_api_key_env_var)
+            api_valid = True 
         except Exception as e:
             st.error(f"API Key 無效，請檢查後重新輸入。")
-            current_key_in_env = False
+            api_valid = False
     else:
-        st.warning("請輸入 API Key 以開始對話")
+        st.warning("請先輸入 API Key")
+    st.divider()
 
-    st.divider() # 分隔線
+    # 3.資料上傳
+    uploaded_file = st.file_uploader("上傳更新資料 (xlsx)", type=["xlsx"])
+
+    if uploaded_file is not None:
+        with open(ACTIVE_FILE, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        st.cache_data.clear()  # 務必清除快取
+        st.success(f"已成功載入並取代現有資料")
+    # 顯示目前檔案資訊
+    current_used = ACTIVE_FILE if os.path.exists(ACTIVE_FILE) else DEFAULT_FILE
+    st.caption(f"目前生效檔案：{current_used}")
+
+    # 讀取當前生效資料
+    current_data = read_excel_sheets()
+
+    if os.path.exists(ACTIVE_FILE):
+        if st.button("🔄 還原為原始預設資料庫"):
+            os.remove(ACTIVE_FILE)
+            st.cache_data.clear()
+            st.rerun()
+
+    st.divider()
     
     if st.button("清除對話歷史"):
         st.session_state.messages = []
-        st.session_state.history_text = ""
+        st.session_state.history_list = []
         st.rerun()
+
+# --- 4. 生成 System Prompt ---
+# 確保 context_data 永遠對應到目前選用的資料 (current_data)
+context_text = format_data_for_ai(current_data)
+system_prompt = f"""
+你是一名專屬助理，請注意以下事項：
+1. 請先分析提問，是需要一般的問題還是想要從歷史紀錄找出相關資料，如果是一般的問題正常回答即可，如果是想從歷史紀錄找出相關資料，則查找資料{context_text}中有無類似或相關之資訊。
+2. 若資料中有相關資訊，請整理並條列式顯示:歷史提問、歷史回答、裝置世代(如有)、類型、流程階段、關鍵字。如有多個相關資訊，請全部條列出來並區隔開來。
+3. 若資料中無相關資訊，請分析客戶提問，並給予類型、流程階段(僅包含APP、安裝前、安裝中、安裝後)、關鍵字。
+"""
+
+# --- 5. 主介面顯示 ---
+st.set_page_config(page_title="CSW")
+st.title("Customer Service Wingman")
 
 # 顯示現有的對話紀錄
 for message in st.session_state.messages:
@@ -129,35 +152,55 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"], avatar=avatar_icon):
         st.markdown(message["content"])
 
-# --- 4. 對話邏輯 ---
+# --- 6. 對話邏輯 ---
 if prompt := st.chat_input("請問我有什麼可以協助的嗎?"):
-    if not user_api_key or not current_key_in_env:
-        st.error(f"⚠️ 驗證失敗：請檢查後在左側選單重新輸入 **{selected_model_display}** 的 API Key。")
+
+    # 檢查驗證
+    if not api_valid:
+        st.error("驗證失敗：請檢查後在左側選單重新輸入 API Key")
         st.stop()
+    if not current_data:
+        st.error("缺少資料庫資料")
+        st.stop()
+
     # 顯示使用者訊息
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user", avatar="🦥"):
         st.markdown(prompt)
 
-    # 呼叫 Akasha 模型
+    # 呼叫 Akasha 回覆
     with st.chat_message("assistant", avatar="🐑"):
         with st.spinner("思考中..."):
-            ak = akasha.ask(
-                model=user_model_name,
-                temperature=0.1,
-                max_input_tokens=20000,
-                max_output_tokens=20000
-            )
-            
-            final_prompt = (
-                system_prompt + 
-                f"\n# 提問: {prompt}" + 
-                f"\n# 對話歷史: {st.session_state.history_text}"
-            )
-            
-            response = ak(prompt=final_prompt)
-            st.markdown(response)
+            try:
+                ak = akasha.ask(
+                    model=config["model_name"],
+                    temperature=0.1,
+                    max_input_tokens=20000,
+                    max_output_tokens=20000
+                )
+                history_text = get_history_string(st.session_state.history_list)
+                final_prompt = (
+                    system_prompt + 
+                    f"\n# 提問: {prompt}" + 
+                    f"\n# 對話歷史: {history_text}"
+                )
+                response = ak(prompt=final_prompt)
+                st.markdown(response)
 
-    # 儲存回覆到紀錄中
-    st.session_state.messages.append({"role": "assistant", "content": response})
-    st.session_state.history_text += f"\n客戶提問: {prompt}\n回覆: {response}"
+                # --- Token 管理與修剪 --- 
+                st.session_state.history_list.append({"q": prompt, "a": response})
+                
+                # 更新並計算 Token
+                current_h_text = get_history_string(st.session_state.history_list)
+                total_content = system_prompt + prompt + current_h_text
+                
+                # 迴圈修剪
+                while ah.myTokenizer.compute_tokens(total_content, config["model_name"]) > 8000 and len(st.session_state.history_list) > 1:
+                    st.session_state.history_list.pop(0)
+                    current_h_text = get_history_string(st.session_state.history_list)
+                    total_content = system_prompt + prompt + current_h_text
+
+                # 存回 messages 用於顯示
+                st.session_state.messages.append({"role": "assistant", "content": response})
+            except Exception as e:
+                st.error(f"模型呼叫失敗: {str(e)}")
