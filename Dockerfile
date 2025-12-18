@@ -25,7 +25,7 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 
 # copy
 COPY app.py .
-COPY data/ ./data/
+COPY default_data/FAQ_Default.xlsx /app/default_data/FAQ_Default.xlsx
 
 # 暴露 Streamlit 預設的 8501 埠口
 EXPOSE 8501
