@@ -1,4 +1,4 @@
-# CSAST
+# Customer Service Wingman
 
 > 客服助手系統終端
 
@@ -21,6 +21,32 @@
 ## 快速開始
 
 ### 安裝
+
+#### SERVER服務
+
+1.  **複製儲存庫 (Clone the repo)**
+    ```bash
+    git clone https://github.com/yu-working/CSAST.git
+    cd CSAST
+    ```
+
+2.  **啟動DOCKER並建立image**
+    ```bash
+    docker build -t csw .
+    ```
+
+3.  **啟動容器**
+    ```
+    docker run ^
+    -v C:\path\to\data:/app/data ^
+    -d -p 8501:8501 ^
+    --name csw csw
+    ```
+
+4.  **使用服務**
+    開啟 `localhost:8501` 檢視服務是否成功啟動
+
+#### 本地CLI
 
 1.  **複製儲存庫 (Clone the repo)**
     ```bash
