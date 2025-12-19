@@ -40,6 +40,14 @@ if "history_list" not in st.session_state:
     st.session_state.history_list = []
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "use_data_name" not in st.session_state:
+    name_path = os.path.join(DATA_FOLDER, "name.txt")
+    if os.path.exists(ACTIVE_FILE) and os.path.exists(name_path):
+        # F5 重整後，從硬碟把檔名抓回來
+        with open(name_path, "r") as f:
+            st.session_state.use_data_name = f.read()
+    else:
+        st.session_state.use_data_name = "DEFAULT"
 if "current_data" not in st.session_state:
     st.session_state.current_data = None
 if "file_processed" not in st.session_state:
@@ -119,7 +127,6 @@ with st.sidebar:
         "上傳更新資料 (xlsx)", 
         type=["xlsx"],
         )
-
     if uploaded_file is not None and not st.session_state.get("file_processed", False):
         with open(ACTIVE_FILE, "wb") as f:
             f.write(uploaded_file.getbuffer())
@@ -127,10 +134,13 @@ with st.sidebar:
         st.session_state.current_data = read_excel_sheets(ACTIVE_FILE)
         st.session_state.file_processed = True
         st.success("✅ 資料庫已更新")
+        with open(os.path.join(DATA_FOLDER, "name.txt"), "w") as f:
+            f.write(uploaded_file.name)
+        st.session_state.use_data_name = uploaded_file.name
         st.rerun()
+
     # 顯示目前檔案資訊
-    current_file = uploaded_file.name if os.path.exists(ACTIVE_FILE) else "DEFAULT"
-    st.caption(f"目前生效檔案：{current_file}")
+    st.caption(f"目前生效檔案：{st.session_state.use_data_name}")
 
     # 使用者手動點擊「X」移除檔案時的重置
     if uploaded_file is None and st.session_state.file_processed:
@@ -139,6 +149,11 @@ with st.sidebar:
         st.cache_data.clear()
         st.session_state.current_data = read_excel_sheets(DEFAULT_FILE)
         st.info("已還原至預設資料庫")
+        name_path = os.path.join(DATA_FOLDER, "name.txt")
+        if os.path.exists(name_path):
+            os.remove(name_path)
+        st.session_state.use_data_name = "DEFAULT"
+        st.rerun()
     st.divider()
     
     if st.button("清除對話歷史"):
